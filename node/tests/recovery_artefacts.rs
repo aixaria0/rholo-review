@@ -138,14 +138,10 @@ fn the_node_serves_a_block_a_client_can_verify_and_attests_its_finality() {
             .as_i64()
             .expect("the finalised block has a height");
 
+        // Read the attestation first, then check the exact block it names. The latest finalized
+        // representative can advance between HTTP requests while autopropose is running.
+        // The earlier observation is a monotone height fence.
         // --- the attestation, bound to this run's nonce -----------------------------------------
-        //
-        // **The attestation is read first, and its block is the subject of the rest.** The chain is
-        // producing (autopropose), so a hash sampled from `/api/last-finalized-block` *before* the
-        // attestation can be superseded while this test makes its next request — which is exactly
-        // how this assertion failed on `dev` at `ebbc6440f`. The attestation is the artefact; the
-        // raw and summary routes are checked against the block it names, and the earlier fence is
-        // used as a monotone lower bound rather than an equality.
         let n = nonce();
         let attestation: Value = client
             .get(format!("{base}/api/v1/finality-attestation?nonce={n}"))
@@ -163,7 +159,6 @@ fn the_node_serves_a_block_a_client_can_verify_and_attests_its_finality() {
             .as_str()
             .expect("the attested block has a hash")
             .to_string();
-
         // The block the node attested is one it has finalised, and it is at or above the fence read
         // before the request — finality is monotone, so a lower block would be a regression.
         let is_finalized: Value = client
@@ -194,6 +189,11 @@ fn the_node_serves_a_block_a_client_can_verify_and_attests_its_finality() {
         let proved: Value = serde_json::from_str(&verdict).expect("the verdict is JSON");
 
         assert_eq!(proved["verified"], Value::Bool(true));
+        assert!(
+            proved["blockNumber"].as_i64().unwrap()
+                >= finalized["blockInfo"]["blockNumber"].as_i64().unwrap(),
+            "the attested finalized block does not predate the observed finality"
+        );
         assert_eq!(
             proved["blockHash"].as_str().unwrap(),
             hash,
@@ -235,6 +235,8 @@ fn the_node_serves_a_block_a_client_can_verify_and_attests_its_finality() {
             proved["bonds"].as_array().is_some_and(|b| !b.is_empty()),
             "a finalised block carries the bond map the meet weighs stake with: {proved}"
         );
+
+
         // The signature is by a validator this shard bonds — the test's validator key, which is also
         // the sender of every block a one-validator shard produces.
         let validator_pub = {
